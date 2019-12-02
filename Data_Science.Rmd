@@ -1,0 +1,744 @@
+---
+title: "Data Science Project"
+author: "Thomas Maltby"
+date: "21/11/2019"
+output: 
+  html_document:
+    toc: yes
+    theme: cosmo
+    highlight: tango
+    code_folding: hide
+    fig_width: 20
+    fig_height: 8
+bibliography: bibliography.bib
+
+---
+
+#Create variables that contain the indices that reference the mean, SE and Worst instead of having to acess with numbers
+#Change Variable names, change styling
+#Short introduction, explanation of methods, conclusion, pull results out into text
+
+## 1. Introduction 
+Ten real-valued features are computed for each cell nucleus:
+
+radius (mean of distances from center to points on the perimeter);
+texture (standard deviation of gray-scale values);
+perimeter;
+area;
+smoothness (local variation in radius lengths);
+compactness (perimeter^2 / area - 1.0);
+concavity (severity of concave portions of the contour);
+concave points (number of concave portions of the contour);
+symmetry;
+fractal dimension (“coastline approximation” - 1).
+The mean, standard error (SE) and “worst” or largest (mean of the three largest values) of these features were computed for each image, resulting in 30 features. We will analyze the features to understand the predictive value for diagnosis. We will then create models using two different algorithms and use the models to predict the diagnosis.
+
+## 2. Setting Up R
+### 2-1) Packages Used
+
+```{r setup, message=FALSE, warning=FALSE, include=FALSE}
+#use incase packages already installed
+chooseCRANmirror(graphics=FALSE, ind=1)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r set up, message=FALSE, warning=FALSE, echo=FALSE}
+library(here)
+library(neldermead)
+library(optimsimplex)
+library(optimbase)
+library(lavaan) # structural equation modelling
+library(sem) # structural equation modelling
+library(factoextra) # running a PCA
+library(magrittr) 
+library(PerformanceAnalytics) # better presentation of data - maybe remove
+library(rlang) # for ggplot2
+library(ggplot2) # presentation of data
+library(GGally) # presentation of data
+library(recipes)
+library(caret) # machine learning
+library(e1071) # running naiveBayes
+library(randomForest) # running randomForest
+library(class) # running knn
+library(C50) # algorithm for creating a decision tree
+library(rpart) # rpart decision tree
+library(highcharter) #used to display various ML outputs
+library(corrplot) # display PCA results
+library(psych) # run EFA and parallel analysis
+library(GPArotation) # used to rotate a matrix for factor analysis
+library(plotly)
+library(corrplot)
+
+```
+
+
+---
+
+
+## 3. Importing, Cleaning and Inspecting
+
+### 3-1) Import the dataset
+```{r data importing, message=FALSE, warning=FALSE, include=FALSE}
+
+#using the here package to make navigating relative folder paths easier
+file <- here::here("data", "raw", "data.csv")
+wbcd <- read.csv(file, header = TRUE, stringsAsFactors = FALSE)
+```
+
+
+### 3-2) Remove NULL data
+```{r remove NULL, message=FALSE, warning=FALSE, include=FALSE}
+#an extra column with no data exists in the file, removed to keep tidy
+wbcd$X <- NULL
+```
+
+
+### 3-3) Reshape the datasets
+```{r factors, message=FALSE, warning=FALSE, include=FALSE}
+#remove the first column containing IDs, not useful for the analysis
+wbcd <- wbcd[,-1]
+
+
+#replace M/B character type with Malignant/Benign factors to be used in defining classes in analyses 
+wbcd$diagnosis[wbcd$diagnosis == "B"] <- "Benign"
+wbcd$diagnosis[wbcd$diagnosis == "M"] <- "Malignant"
+wbcd$diagnosis <- as.factor(wbcd$diagnosis)
+
+
+```
+
+
+### 3-4) Inspect the datasets {.tabset}
+#### Just a quick look at the data before we move ahead with the analysis, not necessary for the final report
+
+#### structure
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+str(wbcd)
+```
+
+#### summary
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+summary(wbcd)
+```
+
+#### head
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+knitr::kable(wbcd)
+```
+
+---
+
+
+## 4. Correlations and Covariances
+
+### 4-1) Correlations between all the variables {.tabset}
+#### Mean
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+chart.Correlation(wbcd[,c(2:11)],
+                  histogram=TRUE,
+                  method = "pearson"
+                  )
+```
+
+#### Standard Errors
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+chart.Correlation(wbcd[,c(12:21)],
+                  histogram=TRUE,
+                  method = "pearson"
+                  )
+```
+
+#### Worst (Mean of Largest 3)
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+chart.Correlation(wbcd[,c(22:11)],
+                  histogram=TRUE,
+                  method = "pearson"
+                  )
+```
+
+### 4-2)Correlations between variables with diagnoses {.tabset}
+#### Mean
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+ggpairs(wbcd[,c(2:11,1)], 
+        aes(color=diagnosis, alpha=0.5), 
+        lower=list("smooth", alpha = 0.3, size=0.1))
+
+```
+
+#### Standard Errors
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+ggpairs(wbcd[,c(12:21,1)], aes(color=diagnosis, alpha=0.75), lower=list(continuous="smooth"))+ theme_bw()+
+labs(title="SE")+
+theme(plot.title=element_text(face='bold',color='black',hjust=0.5,size=12))
+```
+
+#### Worst (Mean of Largest 3)
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+ggpairs(wbcd[,c(22:31,1)], aes(color=diagnosis, alpha=0.75), lower=list(continuous="smooth"))+ theme_bw()+
+labs(title="Worst")+
+theme(plot.title=element_text(face='bold',color='black',hjust=0.5,size=12))
+```
+
+
+### 4-3) Correlation Matrix {.tabset}
+#### All values
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+correlation <- cor(wbcd[2:31], method = "pearson")
+
+corrplot(correlation, number.cex = .9, method = "square", 
+         hclust.method = "ward", order = "AOE",
+         type = "full", tl.cex=0.8,tl.col = "black")
+```
+
+#### Mean
+```{r}
+ggcorr(wbcd[,c(2:11)], 
+       name = "corr", 
+       label = TRUE)+
+  theme(legend.position="none")+
+labs(title="Mean")+
+theme(plot.title=element_text(face='bold',color='black',hjust=0.5,size=12))
+```
+
+#### SE
+```{r}
+ggcorr(wbcd[,c(12:21)], name = "corr", label = TRUE)+
+  theme(legend.position="none")+
+labs(title="SE")+
+theme(plot.title=element_text(face='bold',color='black',hjust=0.5,size=12))
+```
+
+#### Worst
+```{r}
+ggcorr(wbcd[,c(22:31)], name = "corr", label = TRUE)+
+  theme(legend.position="none")+
+labs(title="Worst")+
+theme(plot.title=element_text(face='bold',color='black',hjust=0.5,size=12))
+```
+
+
+
+
+
+
+
+## 5. Supervised Machine Learning Methods
+### 5-1) Create training and test sets from the data using a 70/30 split
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+nrows <- NROW(wbcd)
+set.seed(666)				            ## fix random value for reproducability
+
+# find a paper that justifies the 70/30 split
+
+index <- sample(1:nrows, 0.7 * nrows)	## shuffle and divide
+
+#training_set <- wbcd		        	      ## 569 testing_set data (70%)
+training_set <- wbcd[index,]			        ## 398 testing_set data (30%)
+testing_set <- wbcd[-index,]  		        ## 171 testing_set data (30%)
+```
+
+### 5-2) Check proportion of diagnoses within the training_seting set
+
+#### training_seting set
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+prop.table(table(training_set$diagnosis))
+```
+
+#### testing_seting set
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+prop.table(table(testing_set$diagnosis))
+```
+
+### 5-3) Apply Machine Leaning Methods {.tabset}
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Clustering
+### Dimension Reduction
+# Linear and logistic regression.
+# Linear Discriminant Analysis (LDA).
+### Support-Vector Machines (SVM).
+# Decision trees.
+### Random Forest
+### Naive Bayes.
+### K nearest neighbour.
+# Neural Network?
+# SEM
+```
+
+#### SVM
+```{r}
+
+```
+
+
+#### SVM Tuned
+RUN AN SVM WITHOUT PARAMETER OPTIMISATION THEN COMPARE TO THE TUNED SVM
+```{r SVM best parameters, message=FALSE, warning=FALSE, echo=FALSE}
+#SVM takes two parameters, C and Gamma. Gamma defines how far the influence of a single training_seting example reaches, the C parameter trades off correct classification of training_seting examples against maximization of the decision function’s margin.
+
+#define parameters and all combinations of such --> change values
+gamma <- seq(0,0.1,0.005)
+cost <- 2^(0:5)
+parms <- expand.grid(cost=cost, gamma=gamma)  
+
+
+acc_testing_set <- numeric()
+accuracy1 <- NULL; accuracy2 <- NULL
+
+for(i in 1:NROW(parms)){        
+        learn_svm <- svm(diagnosis~., data=training_set, gamma=parms$gamma[i], cost=parms$cost[i])
+        pre_svm <- predict(learn_svm, testing_set[,-1])
+        accuracy1 <- confusionMatrix(pre_svm, testing_set$diagnosis)
+        accuracy2[i] <- accuracy1$overall[1]
+}
+
+```
+
+```{r SVM paramater performance plot, message=FALSE, warning=FALSE, echo=FALSE}
+acc <- data.frame(p= seq(1,NROW(parms)), cnt = accuracy2)
+
+opt_p <- subset(acc, cnt==max(cnt))[1,]
+sub <- paste("Optimal number of parameter is", opt_p$p, "(accuracy :", opt_p$cnt,") in SVM")
+
+#plot of accuracy against number of parametrs, change how this is performed
+hchart(acc, 'line', hcaes(p, cnt)) %>%
+  hc_title(text = "Accuracy With Varying Parameters (SVM)") %>%
+  hc_subtitle(text = sub) %>%
+  hc_add_theme(hc_theme_google()) %>%
+  hc_xAxis(title = list(text = "Number of Parameters")) %>%
+  hc_yAxis(title = list(text = "Accuracy"))
+```
+
+```{r optimal SVM, message=FALSE, warning=FALSE, echo=FALSE}
+
+#rerun the SVM with optimal parameters to show best prediction performance 
+learn_imp_svm <- svm(diagnosis~., data=training_set, cost=parms$cost[opt_p$p], gamma=parms$gamma[opt_p$p])
+pre_imp_svm <- predict(learn_imp_svm, testing_set[,-1])
+cm_imp_svm <- confusionMatrix(pre_imp_svm, testing_set$diagnosis)
+cm_imp_svm
+```
+
+
+#### K Nearest Neighnours
+https://www.analyticsvidhya.com/blog/2018/03/introduction-k-neighbours-algorithm-clustering/
+
+```{r claculate best value of K, message=FALSE, warning=FALSE, echo=FALSE}
+#k means takes different values of k (number of nearest neighbours) when used in classification
+
+#create a numeric variable to store testing_set statictics
+acc_testing_set <- numeric() 
+
+#create a loop to training_set knn with changing value of k, testing_set accuracy for each given value of k 
+for(i in 1:30){
+    predict <- knn(train=training_set[,-1], 
+                   test=testing_set[,-1], 
+                   cl=training_set[,1], 
+                   k=i, 
+                   prob=T)
+    
+    acc_testing_set <- c(acc_testing_set,
+                  mean(predict==testing_set[,1]))
+}
+
+#create a data frame containing all values of k against accuracies, 
+acc <- data.frame(k= seq(1,30), cnt = acc_testing_set)
+
+opt_k <- subset(acc, cnt==max(cnt))[1,]
+sub <- paste("Optimal number of k is", opt_k$k, "(accuracy :", opt_k$cnt,") in KNN")
+
+#Find alternative method of presentation
+hchart(acc, 'line', hcaes(k, cnt)) %>%
+  hc_title(text = "Accuracy With Varying K (KNN)") %>%
+  hc_subtitle(text = sub) %>%
+  hc_add_theme(hc_theme_google()) %>%
+  hc_xAxis(title = list(text = "Number of Neighbors(k)")) %>%
+  hc_yAxis(title = list(text = "Accuracy"))
+```
+
+```{r optimal K to show best performance, message=FALSE, warning=FALSE, echo=FALSE}
+pre_knn <- knn(train = training_set[,-1], test = testing_set[,-1], cl = training_set[,1], k=opt_k$k, prob=T)
+cm_knn  <- confusionMatrix(pre_knn, testing_set$diagnosis)
+cm_knn
+```
+
+#### Random Forest
+find an article explaining how random forest works
+```{r randomForest training_set and testing_seting, message=FALSE, warning=FALSE, echo=FALSE}
+#training_set the random forst, ntree set to 800 to ensure that each input row predicted a few times as directed by randomForest() documentation
+#~ denotes a model (left = dependent, right is independent), diagnosis dependent on any data
+#. mean any colums from data that are otherwise not used
+learn_rf <- randomForest(diagnosis~., 
+                         data=training_set, 
+                         ntree=800, 
+                         proximity=T, 
+                         importance=T)
+
+#use training_seted model to classify testing_set data
+pre_rf   <- predict(learn_rf, 
+                    testing_set[,-1])
+
+#Calculates a cross-tabulation of observed and predicted classes with associated statistics.
+cm_rf    <- confusionMatrix(pre_rf, 
+                            testing_set$diagnosis)
+
+#display the statistics from the confusion matrix
+cm_rf
+```
+
+```{r randomForest Plot, message=FALSE, warning=FALSE, echo=FALSE}
+#plot of the random Forest data
+plot(learn_rf, 
+     main="Error Rate vs. No. of Trees")
+```
+
+```{r prediction Plot, message=FALSE, warning=FALSE, echo=FALSE}
+# understand what is going on describe
+plot(margin(learn_rf,testing_set$diagnosis))
+```
+
+```{r variance contribution plot, message=FALSE, warning=FALSE, echo=FALSE}
+#important for understanding contributions of data to predictions/improving measures in future
+varImpPlot(learn_rf)
+```
+
+#### naiveBayes
+laplace function applies smoothing. If a given class and feature value never occur together in training_seting daya frequency-based probability estimator will be zero --> wipes out all information about other probabilities when multiplied --> small-sample correction (pseudocount) so no probability set to zero (called laplace when pseudocount is 1), Lidstone smoothing in general case
+
+```{r naiveBayes calculation, message=FALSE, warning=FALSE, echo=FALSE}
+#variables to contain statistical data relating to method accuracy
+acc_testing_set <- numeric()
+accuracy1 <- NULL; accuracy2 <- NULL
+
+
+for(i in 1:30){
+    #run the naiveBayes with a series of different laplace values 
+    learn_imp_nb <- naiveBayes(training_set[,-1], training_set$diagnosis, laplace=i)
+    
+    #testing_set the training_seted model on the testing_set data
+    p_nb <- predict(learn_imp_nb, testing_set[,-1])
+    
+    #Calculates a cross-tabulation of observed and predicted classes with associated statistics.
+    accuracy1 <- confusionMatrix(p_nb, testing_set$diagnosis)
+    accuracy2[i] <- accuracy1$overall[1]
+}
+```
+
+```{r naiveBayes Presentation, message=FALSE, warning=FALSE, echo=FALSE}
+acc <- data.frame(l= seq(1,30), cnt = accuracy2)
+
+opt_l <- subset(acc, cnt==max(cnt))[1,]
+sub <- paste("Optimal number of laplace is", opt_l$l, "(accuracy :", opt_l$cnt,") in naiveBayes")
+
+hchart(acc, 'line', hcaes(l, cnt)) %>%
+  hc_title(text = "Accuracy With Varying Laplace (naiveBayes)") %>%
+  hc_subtitle(text = sub) %>%
+  hc_add_theme(hc_theme_google()) %>%
+  hc_xAxis(title = list(text = "Number of Laplace")) %>%
+  hc_yAxis(title = list(text = "Accuracy"))
+```
+
+```{r naiveBayes without laplace, message=FALSE, warning=FALSE, echo=FALSE}
+#can I add to the for loop in first chunk starting at 0?
+learn_nb <- naiveBayes(training_set[,-1], 
+                       training_set$diagnosis)
+
+pre_nb <- predict(learn_nb, 
+                  testing_set[,-1])
+cm_nb <- confusionMatrix(pre_nb, 
+                         testing_set$diagnosis)		
+cm_nb
+```
+
+#### Decision Trees (using c5.0 algorithm)
+```{r c5.0 optimisation, message=FALSE, warning=FALSE, echo=FALSE}
+acc_testing_set <- numeric()
+accuracy1 <- NULL; accuracy2 <- NULL
+
+for(i in 1:50){
+    learn_imp_c50 <- C5.0(training_set[,-1],training_set$diagnosis,trials = i)      
+    p_c50 <- predict(learn_imp_c50, testing_set[,-1]) 
+    accuracy1 <- confusionMatrix(p_c50, testing_set$diagnosis)
+    accuracy2[i] <- accuracy1$overall[1]
+}
+```
+
+```{r c5.0 parameter accuracy presentation, message=FALSE, warning=FALSE, echo=FALSE}
+acc <- data.frame(t= seq(1,50), cnt = accuracy2)
+
+opt_t <- subset(acc, cnt==max(cnt))[1,]
+sub <- paste("Optimal number of trials is", opt_t$t, "(accuracy :", opt_t$cnt,") in C5.0")
+
+hchart(acc, 'line', hcaes(t, cnt)) %>%
+  hc_title(text = "Accuracy With Varying Trials (C5.0)") %>%
+  hc_subtitle(text = sub) %>%
+  hc_add_theme(hc_theme_google()) %>%
+  hc_xAxis(title = list(text = "Number of Trials")) %>%
+  hc_yAxis(title = list(text = "Accuracy"))
+
+```
+
+```{r optimal c50 paramater, message=FALSE, warning=FALSE, echo=FALSE}		
+learn_imp_c50 <- C5.0(training_set[,-1],training_set$diagnosis,trials=opt_t$t)	
+pre_imp_c50 <- predict(learn_imp_c50, testing_set[,-1])
+cm_imp_c50 <- confusionMatrix(pre_imp_c50, testing_set$diagnosis)
+cm_imp_c50
+```
+
+#### Decision Trees using recursive partitioning
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+learn_rp <- rpart(diagnosis~.,data=training_set,control=rpart.control(minsplit=2))
+pre_rp <- predict(learn_rp, testing_set[,-1], type="class")
+cm_rp  <- confusionMatrix(pre_rp, testing_set$diagnosis)	
+cm_rp
+```
+
+#### Decision Trees using pruning method
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+learn_pru <- prune(learn_rp, cp=learn_rp$cptable[which.min(learn_rp$cptable[,"xerror"]),"CP"])
+pre_pru <- predict(learn_pru, testing_set[,-1], type="class")
+cm_pru <-confusionMatrix(pre_pru, testing_set$diagnosis)			
+cm_pru
+```
+
+### 5-4) Visualisation to compare accuracies
+```{r ML performance plot, message=FALSE, warning=FALSE, echo=FALSE}
+
+#set the colours for the graphs CHANGE
+col <- c("#ed3b3b", "#0099ff")
+
+#define layout
+par(mfrow=c(2,4))
+
+#
+fourfoldplot(cm_imp_svm$table, 
+             color = col, 
+             conf.level = 0, 
+             margin = 1, 
+             main=paste("Tuned SVM (",round(cm_imp_svm$overall[1]*100),"%)",sep=""))
+
+fourfoldplot(cm_knn$table, color = col, conf.level = 0, margin = 1, main=paste("Tune KNN (",round(cm_knn$overall[1]*100),"%)",sep=""))
+fourfoldplot(cm_rf$table, color = col, conf.level = 0, margin = 1, main=paste("RandomForest (",round(cm_rf$overall[1]*100),"%)",sep=""))
+fourfoldplot(cm_nb$table, color = col, conf.level = 0, margin = 1, main=paste("NaiveBayes (",round(cm_nb$overall[1]*100),"%)",sep=""))
+fourfoldplot(cm_imp_c50$table, color = col, conf.level = 0, margin = 1, main=paste("Tune C5.0 (",round(cm_imp_c50$overall[1]*100),"%)",sep=""))
+fourfoldplot(cm_rp$table, color = col, conf.level = 0, margin = 1, main=paste("RPart (",round(cm_rp$overall[1]*100),"%)",sep=""))
+fourfoldplot(cm_pru$table, color = col, conf.level = 0, margin = 1, main=paste("Prune (",round(cm_pru$overall[1]*100),"%)",sep=""))
+
+
+
+
+
+```
+### 5-5) Select best prediction model
+
+
+
+
+## 6. Unsupervised Machine Learning Methods --> Principal Component Analysis (PCA)
+Collapse variables into fewer dimenisions that explain the majority of the variance 
+
+Multicollinearity shown in the correlation matrices
+
+Uses standardized data so avaoids distortion by scale differences
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+#put the data in a new dataframe for editing in the pca
+wbcd_pca <- transform(wbcd)	
+```
+
+### 6-1) Summary {.tabset}
+In the results of PCA, if the cumulative proportion is 85% or above, it can be determined by the number of principal components.
+
+#### All
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+all_pca <- prcomp(wbcd_pca[,-1], 
+                  cor=TRUE, 
+                  scale = TRUE)
+summary(all_pca)
+```
+
+#### Mean
+The cumulative proportion from PC1 to PC3 is about 88.7%. (above 85%)
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+mean_pca <- prcomp(wbcd_pca[,c(2:11)], 
+                   scale = TRUE)
+summary(mean_pca)
+```
+
+#### SE
+The cumulative proportion from PC1 to PC4 is about 86.7%. (above 85%)
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+se_pca <- prcomp(wbcd_pca[,c(12:21)], 
+                 scale = TRUE)
+summary(se_pca)
+```
+
+#### Worst
+The cumulative proportion from PC1 to PC3 is about 85.8%. (above 85%)
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+worst_pca <- prcomp(wbcd_pca[,c(22:31)], 
+                    scale = TRUE)
+summary(worst_pca)
+```
+
+
+
+### 6-2) Screeplot {.tabset}
+Diagram which shows the percentage of variability explained by the principal components
+
+The percentage of variability explained by the principal components can be ascertained through screeplot.
+
+=> View Point : principal components where the line lies.
+
+#### All
+Line lies at point PC6
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+fviz_eig(all_pca, 
+         addlabels=TRUE, 
+         ylim=c(0,60), 
+         geom = c("bar", "line"), 
+         barfill = "pink", 
+         barcolor="grey",
+         linecolor = "red", 
+         ncp=10)+
+labs(title = "Cancer All Variances - PCA",
+         x = "Principal Components", y = "% of variances")
+```
+
+#### Mean
+Line lies at point PC4
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+fviz_eig(mean_pca, addlabels=TRUE, 
+         ylim=c(0,60), 
+         geom = c("bar", "line"), 
+         barfill = "pink", 
+         barcolor="grey",
+         linecolor = "red", 
+         ncp=10)+
+labs(title = "Cancer Mean Variances - PCA",
+         x = "Principal Components", y = "% of variances")
+```
+
+#### SE
+Line lies at point PC4
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+fviz_eig(se_pca, 
+         addlabels=TRUE, 
+         ylim=c(0,60), 
+         geom = c("bar", "line"), 
+         barfill = "pink", 
+         barcolor="grey",
+         linecolor = "red", 
+         ncp=10)+
+labs(title = "Cancer SE Variances - PCA",
+         x = "Principal Components", y = "% of variances")
+```
+
+#### Worst
+Line lies at point PC4
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+fviz_eig(worst_pca, 
+         addlabels=TRUE, 
+         ylim=c(0,60), 
+         geom = c("bar", "line"), 
+         barfill = "pink", 
+         barcolor="grey",
+         linecolor = "red", 
+         ncp=10)+
+labs(title = "Cancer Worst Variances - PCA",
+         x = "Principal Components", y = "% of variances")
+```
+
+### 6-3) Get the PCA  {.tabset}
+
+```{r Get collapsed values, message=FALSE, warning=FALSE, echo=FALSE}
+all_var <- get_pca_var(all_pca)
+all_var
+```
+
+###
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+mean_var <- get_pca_var(mean_pca)
+mean_var
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+corrplot(mean_var$contrib, is.corr=FALSE)	
+```
+
+
+
+### 5-4) Contributions of variables to PCA 
+##### Quality of representation of PCA
+```{r variables correlated to PCs, message=FALSE, warning=FALSE, echo=FALSE}
+#Correlation between variables and PCA
+library("corrplot")
+corrplot(all_var$cos2, is.corr=FALSE)
+```
+
+##### Contributions of variables to PCA
+```{r variable contributions to PCs, message=FALSE, warning=FALSE, echo=FALSE}
+#To highlight the most contributing variables for each components
+corrplot(all_var$contrib, is.corr=FALSE)	
+```
+
+
+### 5-5) Biplot of PCAs with diagnosis 
+
+
+
+
+
+
+## 7. Factor Analysis
+### Importing the data
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+#put the data in a new dataframe for editing in the pca
+wbcd_sem <- transform(wbcd)	
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+mean_sem <- fa.parallel(wbcd_sem[,c(2:11)], 
+                        fm = "minres", 
+                        fa = "fa")
+summary(mean_sem)
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+threefactor <- fa(wbcd_sem[,c(2:11)],
+                  nfactors = 3,
+                  rotate = "oblimin",
+                  fm="ml")
+print(threefactor)
+print(threefactor$loadings,cutoff = 0.3)
+fa.diagram(threefactor)
+```
+
+
+```{r}
+
+#see how well this test performs, maybe compare model to the factors predicted by the PCA
+
+#model specificationm, based upon the exploratory factor analysis
+cancer.model <- '
+                ML1 =~ radius_mean + perimeter_mean + area_mean + concave.points_mean + concavity_mean + texture_mean 
+                
+                ML2 =~ compactness_mean + fractal_dimension_mean + symmetry_mean
+                
+                ML3 =~ smoothness_mean
+                
+                ML1 ~~ ML3
+                
+                ML2 ~~ ML3'
+
+#specify the data to be used, can observe the correlation/covariance matrices
+dataset <- wbcd_sem[,c(2:11)]
+cor_mat <- cor(dataset)
+cov_mat <- cov(dataset)
+
+#fit the model to the data using confirmatory factor analysis
+fit <- cfa(model = cancer.model, data = dataset, estimator="GLS")
+summary(fit, fit.measures = TRUE)
+
+```
+
+
